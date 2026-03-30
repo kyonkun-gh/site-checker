@@ -87,7 +87,11 @@ class CertificateMonitor:
             self.config_loader.validate()
             
             email_config = self.config_loader.get_email_config()
-            self.email_notifier = EmailNotifier(email_config)
+            if email_config:
+                self.email_notifier = EmailNotifier(email_config)
+            else:
+                self.email_notifier = None
+                self.logger.warning("未設定 email.yaml，郵件通知功能停用")
             
             check_interval = self.config_loader.get_check_interval()
             self.scheduler = CertificateCheckScheduler(check_interval)

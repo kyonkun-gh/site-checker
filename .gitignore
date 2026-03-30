@@ -210,3 +210,7 @@ __marimo__/
 logs/
 *.log
 .DS_Store
+
+# Project-specific config files
+*.yaml
+*.yml

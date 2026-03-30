@@ -1,0 +1,9 @@
+# 電子郵件配置
+enabled: true  # 是否開啟郵件通知
+smtp_server: smtp.xxx.com
+smtp_port: 587
+sender_email: your-email@xxx.com
+sender_name: "Monitor"
+sender_password: ~  # 可選，為空時跳過認證
+recipients:
+  - admin@example.com

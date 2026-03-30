@@ -1,0 +1,11 @@
+# 監控設定
+check_interval_hours: 1
+
+# 監控目標
+sites:
+  - url: "https://your.website.com"
+    expected_status: "good"
+  - url: "https://your.website2.com"
+    expected_status: "expired"
+  - url: "https://your.website3.com"
+    expected_status: "revoked"

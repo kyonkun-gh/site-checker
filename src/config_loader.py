@@ -21,17 +21,19 @@ class ConfigLoader:
         初始化設定載入器
         
         參數：
-            config_path: 設定檔路徑（相對於工作目錄）
+            config_path: sites 設定檔路徑（相對於工作目錄）
         """
         self.config_path = Path(config_path)
+        self.email_config_path = self.config_path.parent / "email.yaml"
         self.config = None
+        self.email_config: Dict[str, Any] = {}
         
     def load(self) -> Dict[str, Any]:
         """
         載入 YAML 設定檔
         
         返回：
-            設定檔內容（字典）
+            sites 設定內容（字典）
             
         拋出：
             FileNotFoundError: 設定檔不存在
@@ -42,8 +44,15 @@ class ConfigLoader:
         
         try:
             with open(self.config_path, 'r', encoding='utf-8') as f:
-                self.config = yaml.safe_load(f)
-            logger.info(f"成功載入設定檔: {self.config_path}")
+                loaded = yaml.safe_load(f) or {}
+
+            if not isinstance(loaded, dict):
+                raise ValueError(f"sites 設定檔格式錯誤，必須是字典: {self.config_path}")
+
+            self.config = loaded
+            logger.info(f"成功載入 sites 設定檔: {self.config_path}")
+
+            self.email_config = self._load_email_config()
             return self.config
         except yaml.YAMLError as e:
             logger.error(f"YAML 語法錯誤: {e}")
@@ -51,22 +60,37 @@ class ConfigLoader:
         except Exception as e:
             logger.error(f"載入設定檔失敗: {e}")
             raise
+
+    def _load_email_config(self) -> Dict[str, Any]:
+        """載入 email.yaml，缺失時回傳空設定。"""
+        if not self.email_config_path.exists():
+            logger.warning(f"找不到 email 設定檔，將停用通知: {self.email_config_path}")
+            return {}
+
+        with open(self.email_config_path, 'r', encoding='utf-8') as f:
+            loaded = yaml.safe_load(f) or {}
+
+        if not isinstance(loaded, dict):
+            raise ValueError(f"email 設定檔格式錯誤，必須是字典: {self.email_config_path}")
+
+        logger.info(f"成功載入 email 設定檔: {self.email_config_path}")
+        return loaded
     
     def get_email_config(self) -> Dict[str, Any]:
         """取得電子郵件設定"""
-        if not self.config:
+        if self.config is None:
             self.load()
-        return self.config.get("email", {})
+        return self.email_config
     
     def get_sites(self) -> List[Dict[str, Any]]:
         """取得監控網站列表"""
-        if not self.config:
+        if self.config is None:
             self.load()
         return self.config.get("sites", [])
     
     def get_check_interval(self) -> int:
         """取得檢查間隔（小時）"""
-        if not self.config:
+        if self.config is None:
             self.load()
         return self.config.get("check_interval_hours", 1)
     
@@ -77,21 +101,22 @@ class ConfigLoader:
         返回：
             True 如果驗證通過，否則拋出例外
         """
-        if not self.config:
+        if self.config is None:
             self.load()
         
-        # 驗證必要欄位
-        required_keys = ["email", "sites"]
+        # 驗證 sites 設定必要欄位
+        required_keys = ["sites"]
         for key in required_keys:
             if key not in self.config:
                 raise ValueError(f"設定檔缺少必要欄位: {key}")
-        
-        # 驗證電子郵件設定
-        email_required = ["smtp_server", "smtp_port", "sender_email", "sender_name", "recipients"]
-        email_config = self.config.get("email", {})
-        for key in email_required:
-            if key not in email_config:
-                raise ValueError(f"電子郵件設定缺少必要欄位: {key}")
+
+        # 驗證電子郵件設定（僅在啟用通知時）
+        email_config = self.get_email_config()
+        if email_config and email_config.get("enabled", True):
+            email_required = ["smtp_server", "smtp_port", "sender_email", "sender_name", "recipients"]
+            for key in email_required:
+                if key not in email_config:
+                    raise ValueError(f"電子郵件設定缺少必要欄位: {key}")
         
         # 驗證監控網站
         sites = self.config.get("sites", [])
