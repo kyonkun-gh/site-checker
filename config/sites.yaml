@@ -1,0 +1,18 @@
+# 電子郵件配置
+email:
+  enabled: true  # 是否開啟郵件通知
+  smtp_server: smtp.xxx.com
+  smtp_port: 587
+  sender_email: your-email@xxx.com
+  sender_name: "Monitor"
+  sender_password: ~  # 可選，為空時跳過認證
+  recipients:
+    - admin@example.com
+
+# 監控設定
+check_interval_hours: 1
+
+# 監控目標
+sites:
+  - url: "https://your.website.com"
+    expected_status: "good"

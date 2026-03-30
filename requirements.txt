@@ -1,0 +1,6 @@
+cryptography>=41.0.0
+PyYAML>=6.0
+pyasn1>=0.4.8
+pyOpenSSL>=23.0.0
+APScheduler>=3.10.0
+requests>=2.31.0
