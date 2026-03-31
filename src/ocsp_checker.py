@@ -11,7 +11,13 @@ try:
     from cryptography import x509
     from cryptography.hazmat.backends import default_backend
     from cryptography.hazmat.primitives import hashes
-    from cryptography.x509.ocsp import OCSPRequestBuilder, OCSPResponseStatus
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.x509.ocsp import (
+        OCSPRequestBuilder,
+        OCSPResponseStatus,
+        OCSPCertStatus,
+        load_der_ocsp_response,
+    )
     import requests
 except ImportError:
     raise ImportError("需要安裝: cryptography, requests")
@@ -38,7 +44,7 @@ class OCSPChecker:
         參數：
             cert_der: 憑證的 DER 編碼二進位內容
             issuer_der: 簽發者憑證的 DER 內容（可選）
-            ocsp_url: OCSP 回應器 URL（可選，若無則從憑證提取）
+            ocsp_url: OCSP 回應器 URL（由外部設定提供）
         
         返回：
             {
@@ -52,23 +58,32 @@ class OCSPChecker:
         try:
             cert = x509.load_der_x509_certificate(cert_der, self.backend)
             
-            # 若未提供 OCSP URL，從憑證提取
-            if not ocsp_url:
-                ocsp_url = self._extract_ocsp_url(cert)
-            
             if not ocsp_url:
                 logger.warning("沒有可用的 OCSP 回應器 URL")
                 return {
                     'revoked': None,
                     'message': '沒有 OCSP 回應器可用',
                     'status': 'unknown',
+                    'ocsp_url': None,
                     'error': 'no_ocsp_url'
                 }
+
+            if not issuer_der:
+                logger.warning("缺少 issuer 憑證，無法進行 OCSP 驗證")
+                return {
+                    'revoked': None,
+                    'message': '缺少 issuer 憑證，無法進行 OCSP 驗證',
+                    'status': 'unknown',
+                    'ocsp_url': ocsp_url,
+                    'error': 'missing_issuer_cert'
+                }
+
+            issuer_cert = x509.load_der_x509_certificate(issuer_der, self.backend)
             
             logger.info(f"開始 OCSP 驗證: {ocsp_url}")
             
             # 嘗試 OCSP 驗證
-            result = self._query_ocsp(cert, issuer_der, ocsp_url)
+            result = self._query_ocsp(cert, issuer_cert, ocsp_url)
             return result
             
         except Exception as e:
@@ -103,7 +118,7 @@ class OCSPChecker:
     
     def _query_ocsp(self, 
                    cert: x509.Certificate, 
-                   issuer_der: Optional[bytes],
+                   issuer_cert: x509.Certificate,
                    ocsp_url: str) -> Dict[str, Any]:
         """
         查詢 OCSP 回應器
@@ -116,30 +131,71 @@ class OCSPChecker:
         try:
             logger.debug(f"向 OCSP 回應器發送請求: {ocsp_url}")
             
-            # 建立 OCSP 請求（簡化版，未包含簽發者）
-            # 實際環境需要簽發者憑證才能正確建構請求
+            # 建立 OCSP 請求（需包含簽發者憑證）
             builder = OCSPRequestBuilder()
-            builder = builder.add_certificate(cert, None)  # issuer 參數待補
+            builder = builder.add_certificate(cert, issuer_cert, hashes.SHA1())
             
             ocsp_request = builder.build()
             
             # 發送 OCSP 請求
             response = requests.post(
                 ocsp_url,
-                data=ocsp_request.public_bytes(x509.serialization.Encoding.DER),
+                data=ocsp_request.public_bytes(serialization.Encoding.DER),
                 headers={'Content-Type': 'application/ocsp-request'},
                 timeout=self.TIMEOUT
             )
             response.raise_for_status()
             
-            logger.info("OCSP 回應接收成功")
-            
-            # 解析並驗證 OCSP 回應（簡化版）
+            logger.info(
+                "OCSP 回應接收成功: http_status=%s, content_type=%s, content_length=%s",
+                response.status_code,
+                response.headers.get('Content-Type'),
+                len(response.content),
+            )
+
+            ocsp_response = load_der_ocsp_response(response.content)
+            logger.info(
+                "OCSP 回應摘要: response_status=%s, cert_status=%s, this_update=%s, next_update=%s, "
+                "revocation_time=%s, revocation_reason=%s",
+                ocsp_response.response_status,
+                ocsp_response.certificate_status,
+                ocsp_response.this_update_utc,
+                ocsp_response.next_update_utc,
+                ocsp_response.revocation_time_utc,
+                ocsp_response.revocation_reason,
+            )
+            if ocsp_response.response_status != OCSPResponseStatus.SUCCESSFUL:
+                return {
+                    'revoked': None,
+                    'message': f"OCSP 回應狀態非成功: {ocsp_response.response_status}",
+                    'status': 'unknown',
+                    'ocsp_url': ocsp_url,
+                    'error': 'ocsp_response_not_successful'
+                }
+
+            cert_status = ocsp_response.certificate_status
+            if cert_status == OCSPCertStatus.REVOKED:
+                return {
+                    'revoked': True,
+                    'message': '憑證已被吊銷（根據 OCSP）',
+                    'status': 'revoked',
+                    'ocsp_url': ocsp_url
+                }
+
+            if cert_status == OCSPCertStatus.GOOD:
+                return {
+                    'revoked': False,
+                    'message': '憑證狀態良好（根據 OCSP）',
+                    'status': 'good',
+                    'ocsp_url': ocsp_url
+                }
+
             return {
-                'revoked': False,
-                'message': '憑證狀態良好（根據 OCSP）',
-                'status': 'good',
-                'ocsp_url': ocsp_url
+                'revoked': None,
+                'message': 'OCSP 回應為未知狀態',
+                'status': 'unknown',
+                'ocsp_url': ocsp_url,
+                'error': 'ocsp_unknown_status'
             }
             
         except Exception as e:

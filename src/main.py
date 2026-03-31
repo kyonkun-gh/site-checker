@@ -14,7 +14,7 @@ from urllib.parse import urlparse
 
 from config_loader import ConfigLoader
 from certificate_checker import CertificateChecker
-from validators import get_validator
+from validators import ExpiredValidator, RevokedValidator
 from notifier import EmailNotifier
 from scheduler import CertificateCheckScheduler
 
@@ -122,7 +122,7 @@ class CertificateMonitor:
         url = site['url']
         expected_status = site['expected_status']
         
-        self.logger.info(f"正在檢查: {url} (期望: {expected_status})")
+        self.logger.info(f"正在檢查: {url} (預期: {expected_status})")
         
         result = {
             'url': url,
@@ -130,39 +130,180 @@ class CertificateMonitor:
             'actual': None,
             'status': 'ok',
             'message': '',
-            'cert_info': None
+            'cert_info': None,
+            'check_results': {
+                'url_check': {'status': 'skipped', 'message': '', 'details': {}},
+                'expiry_check': {'status': 'skipped', 'message': '', 'details': {}},
+                'crl_check': {'status': 'skipped', 'message': '', 'details': {}},
+                'ocsp_check': {'status': 'skipped', 'message': '', 'details': {}},
+                'overall_result': {'status': 'failed', 'message': '尚未開始檢查'}
+            }
         }
         
         try:
             # 解析 URL 取得主機名
             parsed = urlparse(url)
-            hostname = parsed.netloc or parsed.path
-            
-            # 獲取憑證
-            cert_der = self.certificate_checker.get_certificate(hostname)
+            hostname = parsed.hostname or parsed.netloc or parsed.path
+            port = parsed.port or 443
+
+            # URL 連線檢查（失敗即停止後續檢查）
+            cert_der = self.certificate_checker.get_certificate(hostname, port)
+            result['check_results']['url_check'] = {
+                'status': 'passed',
+                'message': f'可連線到 {hostname}:{port}',
+                'details': {'hostname': hostname, 'port': port}
+            }
+
+            # 連線成功後才解析憑證
             cert_info = self.certificate_checker.parse_certificate(cert_der)
+            cert_info['ocsp_url'] = site.get('ocsp_url')
+            cert_info['ocsp_url_source'] = 'sites_yaml'
             result['cert_info'] = cert_info
-            
-            # 根據預期狀態進行驗證
-            validator = get_validator(expected_status)
-            validation_result = validator.validate(cert_info)
-            
-            if validation_result['status'] == 'verified':
-                result['actual'] = expected_status
-                result['message'] = validation_result['message']
+
+            # 1) 效期檢查
+            expired_validator = ExpiredValidator()
+            expired_result = expired_validator.validate(cert_info)
+            is_expired = bool(expired_result.get('details', {}).get('is_expired', False))
+            expected_expired = expected_status == 'expired'
+            expiry_passed = is_expired == expected_expired
+            result['check_results']['expiry_check'] = {
+                'status': 'passed' if expiry_passed else 'failed',
+                'message': (
+                    f"效期檢查符合預期（expected={expected_status}, is_expired={is_expired})"
+                    if expiry_passed else
+                    f"效期檢查不符合預期（expected={expected_status}, is_expired={is_expired})"
+                ),
+                'details': expired_result.get('details', {})
+            }
+
+            # 2) 吊銷檢查（CRL + OCSP）
+            revoked_validator = RevokedValidator()
+            revoked_result = revoked_validator.validate(cert_info)
+            revoked_details = revoked_result.get('details', {})
+            crl_raw = revoked_details.get('crl_check')
+            ocsp_raw = revoked_details.get('ocsp_check')
+            expected_revoked = expected_status == 'revoked'
+
+            if not crl_raw:
+                result['check_results']['crl_check'] = {
+                    'status': 'failed',
+                    'message': 'CRL 檢查無結果',
+                    'details': {}
+                }
+            elif crl_raw.get('status') != 'passed' or crl_raw.get('revoked') is None:
+                result['check_results']['crl_check'] = {
+                    'status': 'failed',
+                    'message': crl_raw.get('message', 'CRL 檢查失敗'),
+                    'details': crl_raw.get('details', {})
+                }
             else:
-                result['actual'] = validation_result['status']
+                crl_revoked = bool(crl_raw.get('revoked'))
+                crl_passed = crl_revoked == expected_revoked
+                result['check_results']['crl_check'] = {
+                    'status': 'passed' if crl_passed else 'failed',
+                    'message': (
+                        f"CRL 檢查符合預期（expected_revoked={expected_revoked}, actual_revoked={crl_revoked})"
+                        if crl_passed else
+                        f"CRL 檢查不符合預期（expected_revoked={expected_revoked}, actual_revoked={crl_revoked})"
+                    ),
+                    'details': crl_raw.get('details', {})
+                }
+
+            if not ocsp_raw:
+                result['check_results']['ocsp_check'] = {
+                    'status': 'failed',
+                    'message': 'OCSP 檢查無結果',
+                    'details': {}
+                }
+            else:
+                ocsp_details = ocsp_raw.get('details', {})
+                ocsp_status = ocsp_details.get('status')
+
+                # 業務規則：expired 場景中，OCSP UNKNOWN 才是正確狀態。
+                if expected_status == 'expired':
+                    ocsp_passed = ocsp_status == 'unknown'
+                    result['check_results']['ocsp_check'] = {
+                        'status': 'passed' if ocsp_passed else 'failed',
+                        'message': (
+                            f"OCSP 檢查符合預期（expired 需為 unknown, actual_status={ocsp_status})"
+                            if ocsp_passed else
+                            f"OCSP 檢查不符合預期（expired 需為 unknown, actual_status={ocsp_status})"
+                        ),
+                        'details': ocsp_details
+                    }
+                elif ocsp_raw.get('status') != 'passed' or ocsp_raw.get('revoked') is None:
+                    result['check_results']['ocsp_check'] = {
+                        'status': 'failed',
+                        'message': ocsp_raw.get('message', 'OCSP 檢查失敗'),
+                        'details': ocsp_details
+                    }
+                else:
+                    ocsp_revoked = bool(ocsp_raw.get('revoked'))
+                    ocsp_passed = ocsp_revoked == expected_revoked
+                    result['check_results']['ocsp_check'] = {
+                        'status': 'passed' if ocsp_passed else 'failed',
+                        'message': (
+                            f"OCSP 檢查符合預期（expected_revoked={expected_revoked}, actual_revoked={ocsp_revoked})"
+                            if ocsp_passed else
+                            f"OCSP 檢查不符合預期（expected_revoked={expected_revoked}, actual_revoked={ocsp_revoked})"
+                        ),
+                        'details': ocsp_details
+                    }
+
+            # 3) 綜合結果：任一 failed 即 failed
+            sub_checks = (
+                result['check_results']['url_check'],
+                result['check_results']['expiry_check'],
+                result['check_results']['crl_check'],
+                result['check_results']['ocsp_check']
+            )
+            has_failed = any(item.get('status') == 'failed' for item in sub_checks)
+
+            result['check_results']['overall_result'] = {
+                'status': 'failed' if has_failed else 'passed',
+                'message': '至少一項檢查失敗' if has_failed else '所有檢查均通過'
+            }
+
+            if has_failed:
+                result['actual'] = 'failed'
                 result['status'] = 'alert'
-                result['message'] = validation_result['message']
+                result['message'] = '檢查失敗（請查看 check_results）'
+            else:
+                result['actual'] = expected_status
+                result['message'] = '檢查通過'
             
             self.logger.info(f"檢查完成: {url} -> {result['actual']}")
             return result
             
         except Exception as e:
             self.logger.error(f"檢查失敗: {url} -> {e}")
-            result['status'] = 'error'
-            result['actual'] = 'error'
-            result['message'] = str(e)
+            result['check_results']['url_check'] = {
+                'status': 'failed',
+                'message': f"URL 連線失敗: {str(e)}",
+                'details': {'error': str(e)}
+            }
+            result['check_results']['expiry_check'] = {
+                'status': 'skipped',
+                'message': '因 URL 連線失敗而跳過',
+                'details': {'reason': 'blocked_by_url_failure'}
+            }
+            result['check_results']['crl_check'] = {
+                'status': 'skipped',
+                'message': '因 URL 連線失敗而跳過',
+                'details': {'reason': 'blocked_by_url_failure'}
+            }
+            result['check_results']['ocsp_check'] = {
+                'status': 'skipped',
+                'message': '因 URL 連線失敗而跳過',
+                'details': {'reason': 'blocked_by_url_failure'}
+            }
+            result['check_results']['overall_result'] = {
+                'status': 'failed',
+                'message': 'URL 連線失敗，後續檢查已停止'
+            }
+            result['status'] = 'alert'
+            result['actual'] = 'failed'
+            result['message'] = result['check_results']['overall_result']['message']
             
             return result
     
@@ -270,7 +411,7 @@ def main():
         sites = monitor.config_loader.get_sites()
         logger.info(f"共有 {len(sites)} 個監控目標:")
         for site in sites:
-            logger.info(f"  - {site['url']} (期望狀態: {site['expected_status']})")
+            logger.info(f"  - {site['url']} (預期狀態: {site['expected_status']})")
         
         # 啟動監控服務
         monitor.start()

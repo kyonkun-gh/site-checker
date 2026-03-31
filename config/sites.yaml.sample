@@ -5,7 +5,10 @@ check_interval_hours: 1
 sites:
   - url: "https://your.website.com"
     expected_status: "good"
+    ocsp_url: "http://ocsp.website.com"
   - url: "https://your.website2.com"
     expected_status: "expired"
+    ocsp_url: "http://ocsp.website2.com"
   - url: "https://your.website3.com"
     expected_status: "revoked"
+    ocsp_url: "http://ocsp.website3.com"

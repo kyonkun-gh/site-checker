@@ -8,15 +8,17 @@ import ssl
 import socket
 import logging
 from datetime import datetime
-from typing import Dict, Any, Tuple
+from typing import Dict, Any, Tuple, Optional
 from pathlib import Path
 
 try:
     from cryptography import x509
     from cryptography.x509.oid import ExtensionOID, NameOID
     from cryptography.hazmat.backends import default_backend
+    from cryptography.hazmat.primitives import serialization
+    import requests
 except ImportError:
-    raise ImportError("需要安裝 cryptography 套件: pip install cryptography")
+    raise ImportError("需要安裝 cryptography, requests 套件")
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +31,53 @@ class CertificateChecker:
     
     def __init__(self):
         self.backend = default_backend()
+
+    def _extract_issuer_cert_url(self, cert: x509.Certificate) -> Optional[str]:
+        """從 AIA 擴展提取 issuer certificate URL（CA Issuers）。"""
+        try:
+            from cryptography.x509.oid import AuthorityInformationAccessOID
+
+            aia = cert.extensions.get_extension_for_oid(
+                ExtensionOID.AUTHORITY_INFORMATION_ACCESS
+            )
+            for desc in aia.value:
+                if desc.access_method == AuthorityInformationAccessOID.CA_ISSUERS:
+                    if isinstance(desc.access_location, x509.UniformResourceIdentifier):
+                        return desc.access_location.value
+        except x509.ExtensionNotFound:
+            pass
+        except Exception as e:
+            logger.debug(f"提取 issuer URL 失敗: {e}")
+
+        return None
+
+    def _download_issuer_certificate(self, issuer_url: str) -> tuple[Optional[bytes], Optional[str]]:
+        """下載 issuer 憑證並標準化為 DER。"""
+        try:
+            response = requests.get(issuer_url, timeout=self.SOCKET_TIMEOUT, verify=True)
+            response.raise_for_status()
+            data = response.content
+
+            try:
+                # 先嘗試 DER
+                x509.load_der_x509_certificate(data, self.backend)
+                return data, None
+            except Exception:
+                pass
+
+            try:
+                # 再嘗試 PEM 並轉 DER
+                cert = x509.load_pem_x509_certificate(data, self.backend)
+                return cert.public_bytes(serialization.Encoding.DER), None
+            except Exception:
+                return None, 'unsupported_issuer_certificate_format'
+
+        except requests.RequestException as e:
+            logger.warning(f"下載 issuer 憑證失敗: {e}")
+            return None, 'issuer_download_failed'
+        except Exception as e:
+            logger.warning(f"處理 issuer 憑證失敗: {e}")
+            return None, 'issuer_processing_failed'
     
     def get_certificate(self, hostname: str, port: int = 443) -> bytes:
         """
@@ -138,6 +187,15 @@ class CertificateChecker:
                             break
             except x509.ExtensionNotFound:
                 pass
+
+            # 提取並下載 issuer 憑證（供 OCSP 驗證使用）
+            issuer_cert_url = self._extract_issuer_cert_url(cert)
+            issuer_certificate_der = None
+            issuer_cert_error = None
+            if issuer_cert_url:
+                issuer_certificate_der, issuer_cert_error = self._download_issuer_certificate(issuer_cert_url)
+            else:
+                issuer_cert_error = 'no_issuer_cert_url'
             
             # 提取公鑰類型
             public_key = cert.public_key()
@@ -151,6 +209,9 @@ class CertificateChecker:
                 'serial_number': serial_number,
                 'crl_distribution_points': crl_urls,
                 'ocsp_url': ocsp_url,
+                'issuer_cert_url': issuer_cert_url,
+                'issuer_certificate_der': issuer_certificate_der,
+                'issuer_cert_error': issuer_cert_error,
                 'public_key_type': key_type,
                 'certificate_der': cert_der
             }

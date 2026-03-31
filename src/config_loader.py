@@ -128,10 +128,14 @@ class ConfigLoader:
                 raise ValueError(f"監控網站 #{idx+1} 缺少 'url' 欄位")
             if "expected_status" not in site:
                 raise ValueError(f"監控網站 #{idx+1} 缺少 'expected_status' 欄位")
+            if "ocsp_url" not in site:
+                raise ValueError(f"監控網站 #{idx+1} 缺少 'ocsp_url' 欄位")
             if site["expected_status"] not in ["good", "expired", "revoked"]:
                 raise ValueError(
                     f"監控網站 #{idx+1} 的 expected_status 值無效: {site['expected_status']}"
                 )
+            if not isinstance(site["ocsp_url"], str) or not site["ocsp_url"].strip():
+                raise ValueError(f"監控網站 #{idx+1} 的 ocsp_url 必須是非空字串")
         
         logger.info("設定檔驗證通過")
         return True

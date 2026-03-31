@@ -8,6 +8,9 @@ from abc import ABC, abstractmethod
 from typing import Dict, Any
 import logging
 
+from crl_checker import CRLChecker
+from ocsp_checker import OCSPChecker
+
 logger = logging.getLogger(__name__)
 
 
@@ -83,31 +86,51 @@ class RevokedValidator(CertificateValidator):
     """
     
     def __init__(self):
-        self.crl_checker = None
-        self.ocsp_checker = None
+        self.crl_checker = CRLChecker()
+        self.ocsp_checker = OCSPChecker()
     
     def validate(self, cert_info: Dict[str, Any]) -> Dict[str, Any]:
         """
         驗證憑證是否已吊銷
-        
-        檢查順序：OCSP（快速）-> CRL（備用）
+
+        嚴格模式：CRL 與 OCSP 都必須成功且結果一致。
         """
         try:
-            # 嘗試 OCSP 驗證
-            ocsp_result = self._check_ocsp(cert_info)
-            if ocsp_result:
-                return ocsp_result
-            
-            # 備用：CRL 驗證
+            # 兩個檢查都要執行，並保留獨立結果
             crl_result = self._check_crl(cert_info)
-            if crl_result:
-                return crl_result
-            
-            # 如果都無法驗證
+            ocsp_result = self._check_ocsp(cert_info)
+
+            if crl_result['status'] != 'passed' or ocsp_result['status'] != 'passed':
+                return {
+                    'status': 'failed',
+                    'message': 'CRL 或 OCSP 檢查失敗',
+                    'details': {
+                        'crl_check': crl_result,
+                        'ocsp_check': ocsp_result,
+                        'revoked_consensus': None
+                    }
+                }
+
+            if crl_result['revoked'] != ocsp_result['revoked']:
+                return {
+                    'status': 'failed',
+                    'message': 'CRL 與 OCSP 結果不一致',
+                    'details': {
+                        'crl_check': crl_result,
+                        'ocsp_check': ocsp_result,
+                        'revoked_consensus': None
+                    }
+                }
+
+            revoked_consensus = bool(crl_result['revoked'])
             return {
-                'status': 'inconclusive',
-                'message': '無法驗證憑證吊銷狀態（OCSP 和 CRL 都不可用）',
-                'details': {}
+                'status': 'verified' if revoked_consensus else 'failed',
+                'message': '憑證已被吊銷（CRL 與 OCSP 一致）' if revoked_consensus else '憑證未被吊銷（CRL 與 OCSP 一致）',
+                'details': {
+                    'crl_check': crl_result,
+                    'ocsp_check': ocsp_result,
+                    'revoked_consensus': revoked_consensus
+                }
             }
             
         except Exception as e:
@@ -115,18 +138,63 @@ class RevokedValidator(CertificateValidator):
             return {
                 'status': 'failed',
                 'message': f"吊銷驗證過程出錯: {str(e)}",
-                'details': {}
+                'details': {
+                    'crl_check': None,
+                    'ocsp_check': None,
+                    'revoked_consensus': None
+                }
             }
     
-    def _check_ocsp(self, cert_info: Dict[str, Any]) -> Dict[str, Any] | None:
-        """OCSP 驗證（待實裝）"""
-        logger.debug("OCSP 驗證模組待實裝")
-        return None
+    def _check_ocsp(self, cert_info: Dict[str, Any]) -> Dict[str, Any]:
+        """OCSP 驗證"""
+        result = self.ocsp_checker.check_revocation(
+            cert_der=cert_info.get('certificate_der'),
+            issuer_der=cert_info.get('issuer_certificate_der'),
+            ocsp_url=cert_info.get('ocsp_url')
+        )
+
+        revoked = result.get('revoked')
+        if revoked is None:
+            return {
+                'name': 'ocsp',
+                'status': 'failed',
+                'revoked': None,
+                'message': result.get('message', 'OCSP 檢查失敗'),
+                'details': result
+            }
+
+        return {
+            'name': 'ocsp',
+            'status': 'passed',
+            'revoked': bool(revoked),
+            'message': result.get('message', ''),
+            'details': result
+        }
     
-    def _check_crl(self, cert_info: Dict[str, Any]) -> Dict[str, Any] | None:
-        """CRL 驗證（待實裝）"""
-        logger.debug("CRL 驗證模組待實裝")
-        return None
+    def _check_crl(self, cert_info: Dict[str, Any]) -> Dict[str, Any]:
+        """CRL 驗證"""
+        result = self.crl_checker.check_revocation(
+            cert_der=cert_info.get('certificate_der'),
+            crl_urls=cert_info.get('crl_distribution_points', [])
+        )
+
+        revoked = result.get('revoked')
+        if revoked is None:
+            return {
+                'name': 'crl',
+                'status': 'failed',
+                'revoked': None,
+                'message': result.get('message', 'CRL 檢查失敗'),
+                'details': result
+            }
+
+        return {
+            'name': 'crl',
+            'status': 'passed',
+            'revoked': bool(revoked),
+            'message': result.get('message', ''),
+            'details': result
+        }
 
 
 class GoodValidator(CertificateValidator):
@@ -156,7 +224,14 @@ class GoodValidator(CertificateValidator):
             
             # 檢查是否被吊銷
             revoked_check = self.revoked_validator.validate(cert_info)
-            if revoked_check['status'] == 'verified':  # 如果驗證為「已吊銷」
+            if revoked_check['status'] == 'failed' and revoked_check.get('details', {}).get('revoked_consensus') is None:
+                return {
+                    'status': 'failed',
+                    'message': '吊銷狀態檢查失敗（CRL/OCSP）',
+                    'details': revoked_check.get('details', {})
+                }
+
+            if revoked_check.get('details', {}).get('revoked_consensus') is True:
                 return {
                     'status': 'failed',
                     'message': '憑證已被吊銷',

@@ -146,14 +146,12 @@ class CRLChecker:
         """
         try:
             crl = x509.load_der_x509_crl(crl_data, self.backend)
-            
-            # 檢查每一個已吊銷的憑證
-            revoked_certs = crl.revoked_certificates
-            if revoked_certs:
-                for revoked_cert in revoked_certs:
-                    if revoked_cert.serial_number == serial_number:
-                        logger.warning(f"憑證已被吊銷（CRL）: {serial_number}")
-                        return True
+
+            # cryptography 新版可直接迭代 CRL 條目
+            for revoked_cert in crl:
+                if revoked_cert.serial_number == serial_number:
+                    logger.warning(f"憑證已被吊銷（CRL）: {serial_number}")
+                    return True
             
             logger.debug(f"憑證未在 CRL 中被吊銷: {serial_number}")
             return False
