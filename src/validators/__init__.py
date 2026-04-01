@@ -154,6 +154,15 @@ class RevokedValidator(CertificateValidator):
         )
 
         revoked = result.get('revoked')
+        if result.get('status') == 'unknown' and result.get('error') == 'ocsp_unknown_status':
+            return {
+                'name': 'ocsp',
+                'status': 'passed',
+                'revoked': None,
+                'message': result.get('message', 'OCSP 回應為未知狀態'),
+                'details': result
+            }
+
         if revoked is None:
             return {
                 'name': 'ocsp',

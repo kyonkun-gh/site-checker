@@ -113,7 +113,14 @@ class ConfigLoader:
         # 驗證電子郵件設定（僅在啟用通知時）
         email_config = self.get_email_config()
         if email_config and email_config.get("enabled", True):
-            email_required = ["smtp_server", "smtp_port", "sender_email", "sender_name", "recipients"]
+            email_required = [
+                "smtp_server",
+                "smtp_port",
+                "smtp_username",
+                "sender_email",
+                "sender_name",
+                "recipients"
+            ]
             for key in email_required:
                 if key not in email_config:
                     raise ValueError(f"電子郵件設定缺少必要欄位: {key}")
@@ -136,6 +143,8 @@ class ConfigLoader:
                 )
             if not isinstance(site["ocsp_url"], str) or not site["ocsp_url"].strip():
                 raise ValueError(f"監控網站 #{idx+1} 的 ocsp_url 必須是非空字串")
+            if "issuer_url" in site and site["issuer_url"] is not None and not isinstance(site["issuer_url"], str):
+                raise ValueError(f"監控網站 #{idx+1} 的 issuer_url 必須是字串或空值")
         
         logger.info("設定檔驗證通過")
         return True

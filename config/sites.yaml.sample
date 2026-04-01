@@ -6,9 +6,12 @@ sites:
   - url: "https://your.website.com"
     expected_status: "good"
     ocsp_url: "http://ocsp.website.com"
+    issuer_url: ""  # 選填：指定 OCSP issuer 憑證 URL；留空則使用憑證內建 AIA
+
   - url: "https://your.website2.com"
     expected_status: "expired"
     ocsp_url: "http://ocsp.website2.com"
+    
   - url: "https://your.website3.com"
     expected_status: "revoked"
     ocsp_url: "http://ocsp.website3.com"

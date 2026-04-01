@@ -50,7 +50,7 @@ class OCSPChecker:
             {
                 'revoked': True | False | None,
                 'message': '驗證訊息',
-                'status': 'good' | 'revoked' | 'unknown',
+                'status': 'good' | 'revoked' | 'unknown' | 'error',
                 'ocsp_url': '使用的 OCSP URL',
                 'error': '如果有錯誤'
             }
@@ -63,7 +63,7 @@ class OCSPChecker:
                 return {
                     'revoked': None,
                     'message': '沒有 OCSP 回應器可用',
-                    'status': 'unknown',
+                    'status': 'error',
                     'ocsp_url': None,
                     'error': 'no_ocsp_url'
                 }
@@ -73,7 +73,7 @@ class OCSPChecker:
                 return {
                     'revoked': None,
                     'message': '缺少 issuer 憑證，無法進行 OCSP 驗證',
-                    'status': 'unknown',
+                    'status': 'error',
                     'ocsp_url': ocsp_url,
                     'error': 'missing_issuer_cert'
                 }
@@ -91,7 +91,7 @@ class OCSPChecker:
             return {
                 'revoked': None,
                 'message': f"OCSP 驗證出錯: {str(e)}",
-                'status': 'unknown',
+                'status': 'error',
                 'error': 'query_error'
             }
     
@@ -168,7 +168,7 @@ class OCSPChecker:
                 return {
                     'revoked': None,
                     'message': f"OCSP 回應狀態非成功: {ocsp_response.response_status}",
-                    'status': 'unknown',
+                    'status': 'error',
                     'ocsp_url': ocsp_url,
                     'error': 'ocsp_response_not_successful'
                 }
@@ -192,7 +192,7 @@ class OCSPChecker:
 
             return {
                 'revoked': None,
-                'message': 'OCSP 回應為未知狀態',
+                'message': '憑證狀態未知（根據 OCSP）',
                 'status': 'unknown',
                 'ocsp_url': ocsp_url,
                 'error': 'ocsp_unknown_status'
@@ -203,7 +203,7 @@ class OCSPChecker:
             return {
                 'revoked': None,
                 'message': f"OCSP 查詢失敗: {str(e)}",
-                'status': 'unknown',
+                'status': 'error',
                 'ocsp_url': ocsp_url,
                 'error': 'query_failed'
             }

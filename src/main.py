@@ -158,6 +158,15 @@ class CertificateMonitor:
             cert_info = self.certificate_checker.parse_certificate(cert_der)
             cert_info['ocsp_url'] = site.get('ocsp_url')
             cert_info['ocsp_url_source'] = 'sites_yaml'
+
+            issuer_url = (site.get('issuer_url') or '').strip()
+            if issuer_url:
+                issuer_der, issuer_error = self.certificate_checker.load_issuer_certificate_from_url(issuer_url)
+                cert_info['issuer_cert_url'] = issuer_url
+                cert_info['issuer_cert_source'] = 'sites_yaml'
+                cert_info['issuer_certificate_der'] = issuer_der
+                cert_info['issuer_cert_error'] = issuer_error
+
             result['cert_info'] = cert_info
 
             # 1) 效期檢查
@@ -218,10 +227,11 @@ class CertificateMonitor:
             else:
                 ocsp_details = ocsp_raw.get('details', {})
                 ocsp_status = ocsp_details.get('status')
+                ocsp_validator_passed = ocsp_raw.get('status') == 'passed'
 
-                # 業務規則：expired 場景中，OCSP UNKNOWN 才是正確狀態。
+                # 業務規則：expired 場景中，只有真正收到 OCSP UNKNOWN 回應才算通過。
                 if expected_status == 'expired':
-                    ocsp_passed = ocsp_status == 'unknown'
+                    ocsp_passed = ocsp_validator_passed and ocsp_status == 'unknown'
                     result['check_results']['ocsp_check'] = {
                         'status': 'passed' if ocsp_passed else 'failed',
                         'message': (
@@ -322,21 +332,21 @@ class CertificateMonitor:
         
         # 彙總結果
         alert_count = sum(1 for r in results if r['status'] == 'alert')
-        error_count = sum(1 for r in results if r['status'] == 'error')
+        ok_count = sum(1 for r in results if r['status'] == 'ok')
         
-        self._send_summary_email(results, alert_count, error_count)
+        self._send_summary_email(results, ok_count, alert_count)
         
-        self.logger.info(f"檢查完成: {len(results)} 個網站，{alert_count} 個告警，{error_count} 個錯誤")
+        self.logger.info(f"檢查完成: {len(results)} 個網站，{ok_count} 個正常，{alert_count} 個告警")
         self.logger.info("=" * 50)
     
-    def _send_summary_email(self, results: list[dict], alert_count: int, error_count: int):
+    def _send_summary_email(self, results: list[dict], ok_count: int, alert_count: int):
         """發送整輪檢查摘要郵件"""
         if not self.email_notifier:
             self.logger.warning("郵件通知器未初始化")
             return
         
         try:
-            self.email_notifier.send_summary_report(results, alert_count, error_count)
+            self.email_notifier.send_summary_report(results, ok_count, alert_count)
         except Exception as e:
             self.logger.error(f"發送摘要郵件失敗: {e}")
     

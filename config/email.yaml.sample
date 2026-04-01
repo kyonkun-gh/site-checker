@@ -2,8 +2,9 @@
 enabled: true  # 是否開啟郵件通知
 smtp_server: smtp.xxx.com
 smtp_port: 587
+smtp_username: your-smtp-login@xxx.com
+smtp_password: ~  # 可選，為空時跳過認證
 sender_email: your-email@xxx.com
 sender_name: "Monitor"
-sender_password: ~  # 可選，為空時跳過認證
 recipients:
   - admin@example.com

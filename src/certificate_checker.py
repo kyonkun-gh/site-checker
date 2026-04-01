@@ -78,6 +78,12 @@ class CertificateChecker:
         except Exception as e:
             logger.warning(f"處理 issuer 憑證失敗: {e}")
             return None, 'issuer_processing_failed'
+
+    def load_issuer_certificate_from_url(self, issuer_url: str) -> tuple[Optional[bytes], Optional[str]]:
+        """由指定 URL 下載 issuer 憑證並轉換為 DER。"""
+        if not issuer_url:
+            return None, 'empty_issuer_url'
+        return self._download_issuer_certificate(issuer_url)
     
     def get_certificate(self, hostname: str, port: int = 443) -> bytes:
         """
