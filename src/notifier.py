@@ -198,6 +198,23 @@ class EmailNotifier:
             except Exception:
                 return str(dt)
 
+        def crl_summary(cr: Dict[str, Any], cert_info: Dict[str, Any]) -> str:
+            crl_check = (cr.get('crl_check') or {})
+            crl_details = (crl_check.get('details') or {})
+            serial = cert_info.get('serial_number') or '-'
+
+            if crl_details.get('revoked') is True:
+                return f"CRL 下載成功，序號 {serial} 存在於 CRL"
+            if crl_details.get('revoked') is False:
+                return f"CRL 下載成功，序號 {serial} 不存在於 CRL"
+
+            if crl_check.get('status') == 'skipped':
+                return crl_check.get('message') or 'CRL 檢查已略過'
+
+            detail_msg = crl_details.get('message')
+            check_msg = crl_check.get('message')
+            return f"CRL 下載失敗：{detail_msg or check_msg or '無法下載或驗證 CRL'}"
+
         lines = [summary_text, "", "檢查明細：", ""]
 
         for index, result in enumerate(results, start=1):
@@ -216,11 +233,14 @@ class EmailNotifier:
 
             cert_info = result.get('cert_info') or {}
             ocsp_msg = (cr.get('ocsp_check') or {}).get('details', {}).get('message', '-')
+            crl_msg = crl_summary(cr, cert_info)
             lines.append("   憑證資訊：")
+            lines.append(f"   - 憑證序號: {cert_info.get('serial_number') or '-'}")
             lines.append(f"   - 主體    : {cert_info.get('subject') or '-'}")
             lines.append(f"   - 發行者  : {cert_info.get('issuer') or '-'}")
             lines.append(f"   - 起始時間: {fmt_dt(cert_info.get('not_before'))}")
             lines.append(f"   - 過期時間: {fmt_dt(cert_info.get('not_after'))}")
+            lines.append(f"   - CRL 檢查: {crl_msg}")
             lines.append(f"   - OCSP 回應: {ocsp_msg}")
             lines.append("")
             lines.append("   " + "-" * 40)
@@ -257,6 +277,23 @@ class EmailNotifier:
             except Exception:
                 return str(dt)
 
+        def crl_summary(cr: Dict[str, Any], cert_info: Dict[str, Any]) -> str:
+            crl_check = (cr.get('crl_check') or {})
+            crl_details = (crl_check.get('details') or {})
+            serial = cert_info.get('serial_number') or '-'
+
+            if crl_details.get('revoked') is True:
+                return f"CRL 下載成功，序號 {serial} 存在於 CRL"
+            if crl_details.get('revoked') is False:
+                return f"CRL 下載成功，序號 {serial} 不存在於 CRL"
+
+            if crl_check.get('status') == 'skipped':
+                return crl_check.get('message') or 'CRL 檢查已略過'
+
+            detail_msg = crl_details.get('message')
+            check_msg = crl_check.get('message')
+            return f"CRL 下載失敗：{detail_msg or check_msg or '無法下載或驗證 CRL'}"
+
         td = "style='border:1px solid #e0e0e0; padding:6px 10px; vertical-align:top;'"
         th = "style='border:1px solid #e0e0e0; padding:6px 10px; background:#f5f5f5; font-weight:bold; text-align:left; vertical-align:top; white-space:nowrap;'"
 
@@ -279,6 +316,7 @@ class EmailNotifier:
             crl_status    = (cr.get('crl_check')    or {}).get('status', 'skipped')
             ocsp_status   = (cr.get('ocsp_check')   or {}).get('status', 'skipped')
             ocsp_msg      = (cr.get('ocsp_check') or {}).get('details', {}).get('message', '-') or '-'
+            crl_msg       = crl_summary(cr, cert_info)
 
             def label_color(s: str) -> str:
                 return '#d32f2f' if s == 'failed' else '#222'
@@ -330,10 +368,12 @@ class EmailNotifier:
                 "<p style='margin:0 0 4px 0;'><strong>憑證資訊</strong></p>",
                 "<table style='border-collapse:collapse; width:100%;'>",
                 "<tbody>",
+                f"<tr><td {th}>憑證序號</td><td {td}>{cert_info.get('serial_number') or '-'}</td></tr>",
                 f"<tr><td {th}>主體</td><td {td}>{cert_info.get('subject') or '-'}</td></tr>",
                 f"<tr><td {th}>發行者</td><td {td}>{cert_info.get('issuer') or '-'}</td></tr>",
                 f"<tr><td {th}>起始時間</td><td {td}>{fmt_dt(cert_info.get('not_before'))}</td></tr>",
                 f"<tr><td {th}>過期時間</td><td {td}>{fmt_dt(cert_info.get('not_after'))}</td></tr>",
+                f"<tr><td {th}>CRL 檢查</td><td {td}>{crl_msg}</td></tr>",
                 f"<tr><td {th}>OCSP 回應</td><td {td}>{ocsp_msg}</td></tr>",
                 "</tbody></table>",
             ])
