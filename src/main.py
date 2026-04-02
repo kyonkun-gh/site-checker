@@ -4,12 +4,18 @@
 後台服務：定期監控 SSL/TLS 憑證，檢查有效性並發送告警。
 """
 
+import sys
+from pathlib import Path
+
+# 確保能找到同級模組
+_src_path = Path(__file__).resolve().parent
+if str(_src_path) not in sys.path:
+    sys.path.insert(0, str(_src_path))
+
 import logging.config
 import logging
-import sys
 import signal
 import time
-from pathlib import Path
 from urllib.parse import urlparse
 
 from config_loader import ConfigLoader

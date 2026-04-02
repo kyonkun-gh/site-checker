@@ -10,6 +10,8 @@ import logging
 from pathlib import Path
 from typing import Dict, Any, List
 
+from password_manager import PasswordNormalizer, KeyManager
+
 logger = logging.getLogger(__name__)
 
 
@@ -62,7 +64,12 @@ class ConfigLoader:
             raise
 
     def _load_email_config(self) -> Dict[str, Any]:
-        """載入 email.yaml，缺失時回傳空設定。"""
+        """載入 email.yaml，並自動正規化 smtp_password。
+        
+        - 明碼：自動加密並回寫到 email.yaml
+        - 密文（{AES}...）：解密供執行期使用
+        - 未設定（null/空）：保持原樣
+        """
         if not self.email_config_path.exists():
             logger.warning(f"找不到 email 設定檔，將停用通知: {self.email_config_path}")
             return {}
@@ -74,6 +81,33 @@ class ConfigLoader:
             raise ValueError(f"email 設定檔格式錯誤，必須是字典: {self.email_config_path}")
 
         logger.info(f"成功載入 email 設定檔: {self.email_config_path}")
+        
+        # 密碼正規化與加密
+        try:
+            key_manager = KeyManager()
+            normalizer = PasswordNormalizer(key_manager)
+            
+            raw_password = loaded.get('smtp_password')
+            plaintext_password = normalizer.normalize_and_get_plaintext(
+                raw_password,
+                self.email_config_path
+            )
+            
+            # 將明文密碼放回執行期設定（notifier 會用到）
+            if plaintext_password is not None:
+                loaded['smtp_password'] = plaintext_password
+            
+            logger.info("SMTP 密碼正規化完成")
+        
+        except (ValueError, IOError, FileNotFoundError) as e:
+            error_msg = (
+                f"【致命錯誤】SMTP 密碼處理失敗\n"
+                f"詳細訊息：{e}\n"
+                f"\n程式無法繼續。請參照上方解決方案，修正問題後重新啟動。"
+            )
+            logger.error(error_msg)
+            raise RuntimeError(error_msg) from e
+        
         return loaded
     
     def get_email_config(self) -> Dict[str, Any]:

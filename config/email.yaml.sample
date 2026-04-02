@@ -1,10 +1,12 @@
-# 電子郵件配置
-enabled: true  # 是否開啟郵件通知
-smtp_server: smtp.xxx.com
+# 電子郵件配置範例
+# 詳細說明見 README.md 與 docs/ENCRYPTION.md
+
+enabled: true
+smtp_server: smtp.example.com
 smtp_port: 587
-smtp_username: your-smtp-login@xxx.com
-smtp_password: ~  # 可選，為空時跳過認證
-sender_email: your-email@xxx.com
-sender_name: "Monitor"
+smtp_username: your-email@example.com
+smtp_password: ~  # 首次填入密碼時程式會自動加密
+sender_email: your-email@example.com
+sender_name: Monitor
 recipients:
   - admin@example.com
