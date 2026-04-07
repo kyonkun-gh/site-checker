@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Dict, Any, List
 
 from password_manager import PasswordNormalizer, KeyManager
+from network_utils import merge_network_config, validate_network_config
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +128,12 @@ class ConfigLoader:
         if self.config is None:
             self.load()
         return self.config.get("check_interval_hours", 1)
+
+    def get_network_config(self) -> Dict[str, Any]:
+        """取得正規化後的 network 設定。"""
+        if self.config is None:
+            self.load()
+        return merge_network_config(self.config.get("network"))
     
     def validate(self) -> bool:
         """
@@ -143,6 +150,8 @@ class ConfigLoader:
         for key in required_keys:
             if key not in self.config:
                 raise ValueError(f"設定檔缺少必要欄位: {key}")
+
+        validate_network_config(self.config.get("network"))
 
         # 驗證電子郵件設定（僅在啟用通知時）
         email_config = self.get_email_config()

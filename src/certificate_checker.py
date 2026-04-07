@@ -20,17 +20,24 @@ try:
 except ImportError:
     raise ImportError("需要安裝 cryptography, requests 套件")
 
+from network_utils import (
+    RetryExhaustedError,
+    build_retry_policy,
+    execute_with_retry,
+    format_exception_message,
+    is_retryable_requests_exception,
+    is_retryable_socket_exception,
+)
+
 logger = logging.getLogger(__name__)
 
 
 class CertificateChecker:
     """從網址獲取並解析 SSL 憑證"""
-    
-    # 連線超時設定（秒）
-    SOCKET_TIMEOUT = 10
-    
-    def __init__(self):
+
+    def __init__(self, network_config: Optional[Dict[str, Any]] = None):
         self.backend = default_backend()
+        self.retry_policy = build_retry_policy(network_config)
 
     def _extract_issuer_cert_url(self, cert: x509.Certificate) -> Optional[str]:
         """從 AIA 擴展提取 issuer certificate URL（CA Issuers）。"""
@@ -54,9 +61,24 @@ class CertificateChecker:
     def _download_issuer_certificate(self, issuer_url: str) -> tuple[Optional[bytes], Optional[str]]:
         """下載 issuer 憑證並標準化為 DER。"""
         try:
-            response = requests.get(issuer_url, timeout=self.SOCKET_TIMEOUT, verify=True)
-            response.raise_for_status()
-            data = response.content
+            def _fetch_response() -> bytes:
+                response = requests.get(
+                    issuer_url,
+                    timeout=self.retry_policy.timeout_seconds,
+                    verify=True,
+                )
+                response.raise_for_status()
+                return response.content
+
+            retry_result = execute_with_retry(
+                operation_name="Issuer 憑證下載",
+                target=issuer_url,
+                func=_fetch_response,
+                policy=self.retry_policy,
+                logger=logger,
+                retryable=is_retryable_requests_exception,
+            )
+            data = retry_result.value
 
             try:
                 # 先嘗試 DER
@@ -72,8 +94,14 @@ class CertificateChecker:
             except Exception:
                 return None, 'unsupported_issuer_certificate_format'
 
-        except requests.RequestException as e:
-            logger.warning(f"下載 issuer 憑證失敗: {e}")
+        except RetryExhaustedError as e:
+            logger.warning(
+                "下載 issuer 憑證失敗: url=%s, attempts_used=%s, retries_used=%s, error=%s",
+                issuer_url,
+                e.attempts_used,
+                e.retries_used,
+                format_exception_message(e.last_error),
+            )
             return None, 'issuer_download_failed'
         except Exception as e:
             logger.warning(f"處理 issuer 憑證失敗: {e}")
@@ -100,14 +128,27 @@ class CertificateChecker:
             Exception: 連接失敗或憑證獲取失敗
         """
         try:
-            # 使用 Python 內建 ssl 模組取得憑證
-            context = ssl.create_default_context()
-            context.check_hostname = False
-            context.verify_mode = ssl.CERT_NONE
-            
-            with socket.create_connection((hostname, port), timeout=self.SOCKET_TIMEOUT) as sock:
-                with context.wrap_socket(sock, server_hostname=hostname) as ssock:
-                    cert_der = ssock.getpeercert(binary_form=True)
+            def _fetch_certificate() -> bytes:
+                context = ssl.create_default_context()
+                context.check_hostname = False
+                context.verify_mode = ssl.CERT_NONE
+
+                with socket.create_connection(
+                    (hostname, port),
+                    timeout=self.retry_policy.timeout_seconds,
+                ) as sock:
+                    with context.wrap_socket(sock, server_hostname=hostname) as ssock:
+                        return ssock.getpeercert(binary_form=True)
+
+            retry_result = execute_with_retry(
+                operation_name="網站憑證連線",
+                target=f"{hostname}:{port}",
+                func=_fetch_certificate,
+                policy=self.retry_policy,
+                logger=logger,
+                retryable=is_retryable_socket_exception,
+            )
+            cert_der = retry_result.value
                     
             if not cert_der:
                 raise ValueError(f"無法從 {hostname} 取得憑證")
@@ -115,6 +156,15 @@ class CertificateChecker:
             logger.info(f"成功從 {hostname} 獲取憑證")
             return cert_der
             
+        except RetryExhaustedError as e:
+            logger.error(
+                "憑證獲取失敗 (%s): attempts_used=%s, retries_used=%s, error=%s",
+                hostname,
+                e.attempts_used,
+                e.retries_used,
+                format_exception_message(e.last_error),
+            )
+            raise e.last_error
         except ssl.SSLError as e:
             logger.error(f"SSL 錯誤 ({hostname}): {e}")
             raise

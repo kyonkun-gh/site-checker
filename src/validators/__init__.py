@@ -85,9 +85,9 @@ class RevokedValidator(CertificateValidator):
     檢查憑證是否已被吊銷（使用 CRL 和 OCSP）
     """
     
-    def __init__(self):
-        self.crl_checker = CRLChecker()
-        self.ocsp_checker = OCSPChecker()
+    def __init__(self, network_config: Dict[str, Any] | None = None):
+        self.crl_checker = CRLChecker(network_config)
+        self.ocsp_checker = OCSPChecker(network_config)
     
     def validate(self, cert_info: Dict[str, Any]) -> Dict[str, Any]:
         """

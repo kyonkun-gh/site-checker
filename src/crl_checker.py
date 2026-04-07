@@ -15,18 +15,24 @@ try:
 except ImportError:
     raise ImportError("需要安裝: cryptography, requests")
 
+from network_utils import (
+    RetryExhaustedError,
+    build_retry_policy,
+    execute_with_retry,
+    format_exception_message,
+    is_retryable_requests_exception,
+)
+
 logger = logging.getLogger(__name__)
 
 
 class CRLChecker:
     """CRL 驗證檢查器"""
-    
-    # 請求超時設定（秒）
-    TIMEOUT = 10
-    
-    def __init__(self):
+
+    def __init__(self, network_config: Optional[Dict[str, Any]] = None):
         self.backend = default_backend()
         self.cache = {}  # CRL 快取
+        self.retry_policy = build_retry_policy(network_config)
     
     def check_revocation(self, cert_der: bytes, crl_urls: List[str]) -> Dict[str, Any]:
         """
@@ -60,6 +66,7 @@ class CRLChecker:
             logger.info(f"開始檢查 CRL，序列號: {serial}")
             
             checked_urls = []
+            checked_url_details = []
             
             # 嘗試從每個 CRL URL 檢查
             for crl_url in crl_urls:
@@ -67,18 +74,45 @@ class CRLChecker:
                     logger.debug(f"從 {crl_url} 下載 CRL")
                     checked_urls.append(crl_url)
                     
-                    crl_data = self._download_crl(crl_url)
+                    download_result = self._download_crl(crl_url)
+                    if not download_result or not download_result.get('crl_data'):
+                        checked_url_details.append({
+                            'url': crl_url,
+                            'status': 'failed',
+                            'attempts_used': download_result.get('attempts_used', 0) if download_result else 0,
+                            'retries_used': download_result.get('retries_used', 0) if download_result else 0,
+                            'error': download_result.get('error', 'download_failed') if download_result else 'download_failed'
+                        })
+                        continue
+
+                    crl_data = download_result.get('crl_data')
                     if crl_data:
                         result = self._check_certificate_in_crl(serial, crl_data)
+                        checked_url_details.append({
+                            'url': crl_url,
+                            'status': 'succeeded',
+                            'attempts_used': download_result['attempts_used'],
+                            'retries_used': download_result['retries_used'],
+                        })
                         return {
                             'revoked': result,
                             'message': f"憑證{'已被吊銷' if result else '未被吊銷'}（根據 CRL）",
                             'checked_urls': checked_urls,
-                            'crl_url_used': crl_url
+                            'checked_url_details': checked_url_details,
+                            'crl_url_used': crl_url,
+                            'attempts_used': download_result['attempts_used'],
+                            'retries_used': download_result['retries_used']
                         }
                 
                 except Exception as e:
                     logger.warning(f"CRL 檢查失敗 ({crl_url}): {e}")
+                    checked_url_details.append({
+                        'url': crl_url,
+                        'status': 'failed',
+                        'attempts_used': 0,
+                        'retries_used': 0,
+                        'error': str(e)
+                    })
                     continue
             
             # 所有 CRL URL 都失敗
@@ -86,6 +120,7 @@ class CRLChecker:
                 'revoked': None,
                 'message': '無法驗證 CRL（所有發佈點都不可用）',
                 'checked_urls': checked_urls,
+                'checked_url_details': checked_url_details,
                 'error': 'all_urls_failed'
             }
             
@@ -98,7 +133,7 @@ class CRLChecker:
                 'error': 'check_error'
             }
     
-    def _download_crl(self, url: str) -> Optional[bytes]:
+    def _download_crl(self, url: str) -> Optional[Dict[str, Any]]:
         """
         從 URL 下載 CRL
         
@@ -111,27 +146,71 @@ class CRLChecker:
         # 快取檢查
         if url in self.cache:
             logger.debug(f"使用快取的 CRL: {url}")
-            return self.cache[url]
+            return {
+                'crl_data': self.cache[url],
+                'attempts_used': 1,
+                'retries_used': 0,
+                'source': 'cache'
+            }
         
         try:
             logger.debug(f"下載 CRL: {url}")
-            response = requests.get(url, timeout=self.TIMEOUT, verify=True)
-            response.raise_for_status()
-            
-            crl_data = response.content
+
+            def _fetch_response() -> bytes:
+                response = requests.get(
+                    url,
+                    timeout=self.retry_policy.timeout_seconds,
+                    verify=True,
+                )
+                response.raise_for_status()
+                return response.content
+
+            retry_result = execute_with_retry(
+                operation_name="CRL 下載",
+                target=url,
+                func=_fetch_response,
+                policy=self.retry_policy,
+                logger=logger,
+                retryable=is_retryable_requests_exception,
+            )
+
+            crl_data = retry_result.value
             
             # 快取 CRL
             self.cache[url] = crl_data
             logger.info(f"CRL 下載成功: {url}")
             
-            return crl_data
+            return {
+                'crl_data': crl_data,
+                'attempts_used': retry_result.attempts_used,
+                'retries_used': retry_result.retries_used,
+                'source': 'network'
+            }
             
-        except requests.RequestException as e:
-            logger.error(f"CRL 下載失敗: {e}")
-            return None
+        except RetryExhaustedError as e:
+            logger.error(
+                "CRL 下載失敗: url=%s, attempts_used=%s, retries_used=%s, error=%s",
+                url,
+                e.attempts_used,
+                e.retries_used,
+                format_exception_message(e.last_error),
+            )
+            return {
+                'crl_data': None,
+                'attempts_used': e.attempts_used,
+                'retries_used': e.retries_used,
+                'source': 'network',
+                'error': format_exception_message(e.last_error)
+            }
         except Exception as e:
             logger.error(f"CRL 下載過程出錯: {e}")
-            return None
+            return {
+                'crl_data': None,
+                'attempts_used': 1,
+                'retries_used': 0,
+                'source': 'network',
+                'error': str(e)
+            }
     
     def _check_certificate_in_crl(self, serial_number: int, crl_data: bytes) -> bool:
         """

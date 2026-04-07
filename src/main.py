@@ -79,7 +79,8 @@ class CertificateMonitor:
             config_path = str(Path(__file__).parent.parent / "config" / "sites.yaml")
         
         self.config_loader = ConfigLoader(config_path)
-        self.certificate_checker = CertificateChecker()
+        self.network_config = None
+        self.certificate_checker = None
         self.email_notifier = None
         self.scheduler = None
         self.running = False
@@ -91,6 +92,8 @@ class CertificateMonitor:
         try:
             self.config_loader.load()
             self.config_loader.validate()
+            self.network_config = self.config_loader.get_network_config()
+            self.certificate_checker = CertificateChecker(self.network_config)
             
             email_config = self.config_loader.get_email_config()
             if email_config:
@@ -192,7 +195,7 @@ class CertificateMonitor:
             }
 
             # 2) 吊銷檢查（CRL + OCSP）
-            revoked_validator = RevokedValidator()
+            revoked_validator = RevokedValidator(self.network_config)
             revoked_result = revoked_validator.validate(cert_info)
             revoked_details = revoked_result.get('details', {})
             crl_raw = revoked_details.get('crl_check')

@@ -22,17 +22,23 @@ try:
 except ImportError:
     raise ImportError("需要安裝: cryptography, requests")
 
+from network_utils import (
+    RetryExhaustedError,
+    build_retry_policy,
+    execute_with_retry,
+    format_exception_message,
+    is_retryable_requests_exception,
+)
+
 logger = logging.getLogger(__name__)
 
 
 class OCSPChecker:
     """OCSP 驗證檢查器"""
-    
-    # 請求超時設定（秒）
-    TIMEOUT = 10
-    
-    def __init__(self):
+
+    def __init__(self, network_config: Optional[Dict[str, Any]] = None):
         self.backend = default_backend()
+        self.retry_policy = build_retry_policy(network_config)
     
     def check_revocation(self, 
                         cert_der: bytes, 
@@ -136,15 +142,26 @@ class OCSPChecker:
             builder = builder.add_certificate(cert, issuer_cert, hashes.SHA1())
             
             ocsp_request = builder.build()
-            
-            # 發送 OCSP 請求
-            response = requests.post(
-                ocsp_url,
-                data=ocsp_request.public_bytes(serialization.Encoding.DER),
-                headers={'Content-Type': 'application/ocsp-request'},
-                timeout=self.TIMEOUT
+
+            def _send_request():
+                response = requests.post(
+                    ocsp_url,
+                    data=ocsp_request.public_bytes(serialization.Encoding.DER),
+                    headers={'Content-Type': 'application/ocsp-request'},
+                    timeout=self.retry_policy.timeout_seconds
+                )
+                response.raise_for_status()
+                return response
+
+            retry_result = execute_with_retry(
+                operation_name="OCSP request",
+                target=ocsp_url,
+                func=_send_request,
+                policy=self.retry_policy,
+                logger=logger,
+                retryable=is_retryable_requests_exception,
             )
-            response.raise_for_status()
+            response = retry_result.value
             
             logger.info(
                 "OCSP 回應接收成功: http_status=%s, content_type=%s, content_length=%s",
@@ -179,7 +196,9 @@ class OCSPChecker:
                     'revoked': True,
                     'message': '憑證已被吊銷（根據 OCSP）',
                     'status': 'revoked',
-                    'ocsp_url': ocsp_url
+                    'ocsp_url': ocsp_url,
+                    'attempts_used': retry_result.attempts_used,
+                    'retries_used': retry_result.retries_used
                 }
 
             if cert_status == OCSPCertStatus.GOOD:
@@ -187,7 +206,9 @@ class OCSPChecker:
                     'revoked': False,
                     'message': '憑證狀態良好（根據 OCSP）',
                     'status': 'good',
-                    'ocsp_url': ocsp_url
+                    'ocsp_url': ocsp_url,
+                    'attempts_used': retry_result.attempts_used,
+                    'retries_used': retry_result.retries_used
                 }
 
             return {
@@ -195,9 +216,28 @@ class OCSPChecker:
                 'message': '憑證狀態未知（根據 OCSP）',
                 'status': 'unknown',
                 'ocsp_url': ocsp_url,
+                'attempts_used': retry_result.attempts_used,
+                'retries_used': retry_result.retries_used,
                 'error': 'ocsp_unknown_status'
             }
             
+        except RetryExhaustedError as e:
+            logger.error(
+                "OCSP 查詢失敗: url=%s, attempts_used=%s, retries_used=%s, error=%s",
+                ocsp_url,
+                e.attempts_used,
+                e.retries_used,
+                format_exception_message(e.last_error),
+            )
+            return {
+                'revoked': None,
+                'message': f"OCSP 查詢失敗: {str(e.last_error)}",
+                'status': 'error',
+                'ocsp_url': ocsp_url,
+                'attempts_used': e.attempts_used,
+                'retries_used': e.retries_used,
+                'error': 'query_failed'
+            }
         except Exception as e:
             logger.error(f"OCSP 查詢失敗: {e}")
             return {

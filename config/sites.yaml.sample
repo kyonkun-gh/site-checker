@@ -1,6 +1,17 @@
 # 監控設定
 check_interval_hours: 1
 
+network:
+  timeout_seconds: 10
+  retry:
+    enabled: true
+    max_retries: 2
+    backoff_strategy: exponential
+    initial_delay_seconds: 0.5
+    multiplier: 2.0
+    max_delay_seconds: 5.0
+    jitter_seconds: 0.25
+
 # 監控目標
 sites:
   - url: "https://your.website.com"
