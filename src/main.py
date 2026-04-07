@@ -103,7 +103,8 @@ class CertificateMonitor:
                 self.logger.warning("未設定 email.yaml，郵件通知功能停用")
             
             check_interval = self.config_loader.get_check_interval()
-            self.scheduler = CertificateCheckScheduler(check_interval)
+            check_times = self.config_loader.get_check_times()
+            self.scheduler = CertificateCheckScheduler(check_interval, check_times)
             
             self.logger.info("配置載入和驗證完成")
             
