@@ -5,6 +5,7 @@
 """
 
 import os
+import re
 import yaml
 import logging
 from pathlib import Path
@@ -14,6 +15,8 @@ from password_manager import PasswordNormalizer, KeyManager
 from network_utils import merge_network_config, validate_network_config
 
 logger = logging.getLogger(__name__)
+
+TIME_24H_REGEX = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
 
 
 class ConfigLoader:
@@ -124,10 +127,49 @@ class ConfigLoader:
         return self.config.get("sites", [])
     
     def get_check_interval(self) -> int:
-        """取得檢查間隔（小時）"""
+        """取得檢查間隔（小時）。未設定時回傳 None。"""
         if self.config is None:
             self.load()
-        return self.config.get("check_interval_hours", 1)
+        return self.config.get("check_interval_hours")
+
+    def get_check_times(self) -> List[str]:
+        """取得每日固定檢查時間（HH:MM）。未設定時回傳空陣列。"""
+        if self.config is None:
+            self.load()
+
+        raw_times = self.config.get("check_times")
+        if raw_times is None:
+            return []
+
+        normalized = self._normalize_check_times(raw_times)
+        self.config["check_times"] = normalized
+        return normalized
+
+    def _normalize_check_times(self, check_times: Any) -> List[str]:
+        """驗證並正規化 check_times（24 小時 HH:MM）。"""
+        if not isinstance(check_times, list):
+            raise ValueError("check_times 必須是陣列，格式例如: ['12:00', '18:00']")
+        if not check_times:
+            raise ValueError("check_times 不可為空陣列")
+
+        normalized_times: List[str] = []
+        seen = set()
+
+        for idx, value in enumerate(check_times):
+            if not isinstance(value, str):
+                raise ValueError(f"check_times 第 {idx+1} 個值必須是字串")
+
+            time_str = value.strip()
+            if not TIME_24H_REGEX.match(time_str):
+                raise ValueError(
+                    f"check_times 第 {idx+1} 個值格式錯誤: {value}，必須是 24 小時 HH:MM"
+                )
+
+            if time_str not in seen:
+                seen.add(time_str)
+                normalized_times.append(time_str)
+
+        return normalized_times
 
     def get_network_config(self) -> Dict[str, Any]:
         """取得正規化後的 network 設定。"""
@@ -150,6 +192,28 @@ class ConfigLoader:
         for key in required_keys:
             if key not in self.config:
                 raise ValueError(f"設定檔缺少必要欄位: {key}")
+
+        has_interval = (
+            "check_interval_hours" in self.config
+            and self.config.get("check_interval_hours") is not None
+        )
+        has_check_times = (
+            "check_times" in self.config
+            and self.config.get("check_times") is not None
+        )
+
+        if has_interval == has_check_times:
+            raise ValueError(
+                "排程設定錯誤：check_interval_hours 與 check_times 必須且只能擇一設定"
+            )
+
+        if has_interval:
+            interval = self.config.get("check_interval_hours")
+            if isinstance(interval, bool) or not isinstance(interval, int) or interval <= 0:
+                raise ValueError("check_interval_hours 必須是大於 0 的整數")
+
+        if has_check_times:
+            self.config["check_times"] = self._normalize_check_times(self.config.get("check_times"))
 
         validate_network_config(self.config.get("network"))
 

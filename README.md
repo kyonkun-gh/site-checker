@@ -2,6 +2,25 @@
 
 SSL/TLS 憑證監控工具，支援網站憑證檢查、CRL 驗證與 OCSP 驗證。
 
+## 排程設定
+
+`config/sites.yaml` 支援兩種排程模式，且必須二選一：
+
+- `check_interval_hours`：每 N 小時執行一次
+- `check_times`：每日固定時間執行（24 小時 `HH:MM`）
+
+範例：
+
+```yaml
+# 模式 1：固定間隔
+check_interval_hours: 1
+
+# 模式 2：每日固定時間（與 check_interval_hours 互斥）
+# check_times:
+#   - "12:00"
+#   - "18:00"
+```
+
 ## 文件
 
 - Network Retry 完整設定指南：[docs/NETWORK_RETRY.md](docs/NETWORK_RETRY.md)

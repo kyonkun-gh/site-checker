@@ -5,9 +5,10 @@
 """
 
 import logging
-from typing import Dict, Any, Callable
+from typing import Callable, List, Optional
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
+from apscheduler.triggers.cron import CronTrigger
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -16,19 +17,36 @@ logger = logging.getLogger(__name__)
 class CertificateCheckScheduler:
     """憑證檢查調度器"""
     
-    def __init__(self, check_interval_hours: int = 1):
+    def __init__(self, check_interval_hours: Optional[int] = None, check_times: Optional[List[str]] = None):
         """
         初始化調度器
         
         參數：
             check_interval_hours: 檢查間隔（小時）
+            check_times: 每日固定檢查時間（HH:MM）
         """
         self.scheduler = BackgroundScheduler()
         self.check_interval_hours = check_interval_hours
+        self.check_times = check_times or []
         self.check_function = None
         self.is_running = False
+
+        has_interval = check_interval_hours is not None
+        has_check_times = bool(self.check_times)
+        if has_interval == has_check_times:
+            raise ValueError("排程設定錯誤：check_interval_hours 與 check_times 必須且只能擇一設定")
+
+        self.mode = "interval" if has_interval else "times"
         
-        logger.info(f"調度器已初始化，檢查間隔: {check_interval_hours} 小時")
+        if self.mode == "interval":
+            logger.info(f"調度器已初始化（interval 模式），檢查間隔: {check_interval_hours} 小時")
+        else:
+            logger.info(f"調度器已初始化（time 模式），固定時間: {', '.join(self.check_times)}")
+
+    def _parse_time(self, time_str: str):
+        """解析 HH:MM 字串為 hour, minute。"""
+        hour, minute = time_str.split(":")
+        return int(hour), int(minute)
     
     def set_check_function(self, func: Callable):
         """
@@ -56,19 +74,34 @@ class CertificateCheckScheduler:
             self.check_function()
             
             # 設定定期任務
-            trigger = IntervalTrigger(hours=self.check_interval_hours)
-            self.scheduler.add_job(
-                self.check_function,
-                trigger=trigger,
-                id='certificate_check',
-                name='定期憑證檢查',
-                replace_existing=True
-            )
+            if self.mode == "interval":
+                trigger = IntervalTrigger(hours=self.check_interval_hours)
+                self.scheduler.add_job(
+                    self.check_function,
+                    trigger=trigger,
+                    id='certificate_check_interval',
+                    name='定期憑證檢查（間隔）',
+                    replace_existing=True
+                )
+            else:
+                for check_time in self.check_times:
+                    hour, minute = self._parse_time(check_time)
+                    trigger = CronTrigger(hour=hour, minute=minute)
+                    self.scheduler.add_job(
+                        self.check_function,
+                        trigger=trigger,
+                        id=f"certificate_check_{check_time.replace(':', '')}",
+                        name=f"定期憑證檢查（{check_time}）",
+                        replace_existing=True
+                    )
             
             self.scheduler.start()
             self.is_running = True
             
-            logger.info(f"調度服務已啟動，每 {self.check_interval_hours} 小時檢查一次")
+            if self.mode == "interval":
+                logger.info(f"調度服務已啟動，每 {self.check_interval_hours} 小時檢查一次")
+            else:
+                logger.info(f"調度服務已啟動，每日固定時間檢查: {', '.join(self.check_times)}")
             
         except Exception as e:
             logger.error(f"啟動調度器失敗: {e}")
@@ -96,9 +129,10 @@ class CertificateCheckScheduler:
             datetime 物件，或 None 如果調度器未執行
         """
         try:
-            job = self.scheduler.get_job('certificate_check')
-            if job:
-                return job.next_run_time
+            jobs = self.scheduler.get_jobs()
+            next_run_times = [job.next_run_time for job in jobs if job.next_run_time is not None]
+            if next_run_times:
+                return min(next_run_times)
         except Exception as e:
             logger.debug(f"獲取下次執行時間失敗: {e}")
         

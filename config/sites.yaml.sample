@@ -1,5 +1,9 @@
 # 監控設定
+# 排程設定（check_interval_hours 與 check_times 只能擇一）
 check_interval_hours: 1
+# check_times:
+#   - "12:00"
+#   - "18:00"
 
 network:
   timeout_seconds: 10
