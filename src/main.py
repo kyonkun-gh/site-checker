@@ -20,7 +20,7 @@ from urllib.parse import urlparse
 
 from config_loader import ConfigLoader
 from certificate_checker import CertificateChecker
-from validators import ExpiredValidator, RevokedValidator
+from validators import ExpiredValidator, RevokedValidator, RenewalValidator
 from notifier import EmailNotifier
 from scheduler import CertificateCheckScheduler
 
@@ -143,6 +143,7 @@ class CertificateMonitor:
             'cert_info': None,
             'check_results': {
                 'url_check': {'status': 'skipped', 'message': '', 'details': {}},
+                'renewal_check': {'status': 'skipped', 'message': '', 'details': {}},
                 'expiry_check': {'status': 'skipped', 'message': '', 'details': {}},
                 'crl_check': {'status': 'skipped', 'message': '', 'details': {}},
                 'ocsp_check': {'status': 'skipped', 'message': '', 'details': {}},
@@ -165,21 +166,42 @@ class CertificateMonitor:
             }
 
             # 連線成功後才解析憑證
-            cert_info = self.certificate_checker.parse_certificate(cert_der)
+            issuer_url = (site.get('issuer_url') or '').strip()
+            skip_aia_issuer = bool(issuer_url)  # 如果用戶提供 issuer_url，就略過 AIA 下載
+            cert_info = self.certificate_checker.parse_certificate(cert_der, skip_aia_issuer_download=skip_aia_issuer)
             cert_info['ocsp_url'] = site.get('ocsp_url')
             cert_info['ocsp_url_source'] = 'sites_yaml'
-
-            issuer_url = (site.get('issuer_url') or '').strip()
             if issuer_url:
+                self.logger.debug(f"從 sites.yaml 手動提供 issuer URL: {issuer_url}")
                 issuer_der, issuer_error = self.certificate_checker.load_issuer_certificate_from_url(issuer_url)
                 cert_info['issuer_cert_url'] = issuer_url
                 cert_info['issuer_cert_source'] = 'sites_yaml'
                 cert_info['issuer_certificate_der'] = issuer_der
                 cert_info['issuer_cert_error'] = issuer_error
+                if issuer_der:
+                    self.logger.info(f"成功從 sites.yaml 指定 URL 下載 issuer 憑證: {issuer_url}")
+                else:
+                    self.logger.warning(f"從 sites.yaml 指定 URL 下載 issuer 憑證失敗: {issuer_url}, error={issuer_error}")
 
             result['cert_info'] = cert_info
 
-            # 1) 效期檢查
+            # 1) 續約檢查（在效期檢查之前執行）
+            renewal_days = site.get('renewal_days')
+            renewal_validator = RenewalValidator()
+            renewal_result = renewal_validator.validate(cert_info, renewal_days)
+            renewal_status = renewal_result.get('status')
+            
+            # renewal_check 的標籤包含天數（僅當 renewal_days 有設定時）
+            renewal_days_label = f"({renewal_days}天)" if renewal_days is not None else ""
+            
+            result['check_results']['renewal_check'] = {
+                'status': renewal_status,
+                'message': renewal_result.get('message', ''),
+                'details': renewal_result.get('details', {}),
+                'label_suffix': renewal_days_label
+            }
+
+            # 2) 效期檢查
             expired_validator = ExpiredValidator()
             expired_result = expired_validator.validate(cert_info)
             is_expired = bool(expired_result.get('details', {}).get('is_expired', False))
@@ -195,7 +217,7 @@ class CertificateMonitor:
                 'details': expired_result.get('details', {})
             }
 
-            # 2) 吊銷檢查（CRL + OCSP）
+            # 3) 吊銷檢查（CRL + OCSP）
             revoked_validator = RevokedValidator(self.network_config)
             revoked_result = revoked_validator.validate(cert_info)
             revoked_details = revoked_result.get('details', {})
@@ -270,14 +292,22 @@ class CertificateMonitor:
                         'details': ocsp_details
                     }
 
-            # 3) 綜合結果：任一 failed 即 failed
+            # 4) 綜合結果：任一 failed 即 failed
             sub_checks = (
                 result['check_results']['url_check'],
+                result['check_results']['renewal_check'],
                 result['check_results']['expiry_check'],
                 result['check_results']['crl_check'],
                 result['check_results']['ocsp_check']
             )
-            has_failed = any(item.get('status') == 'failed' for item in sub_checks)
+            # renewal_check 在 not_set 狀態時不影響整體結果
+            renewal_check_failed = (
+                result['check_results']['renewal_check'].get('status') == 'failed'
+            )
+            has_failed = renewal_check_failed or any(
+                item.get('status') == 'failed' 
+                for item in [result['check_results'][k] for k in ('url_check', 'expiry_check', 'crl_check', 'ocsp_check')]
+            )
 
             result['check_results']['overall_result'] = {
                 'status': 'failed' if has_failed else 'passed',

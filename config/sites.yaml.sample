@@ -17,16 +17,32 @@ network:
     jitter_seconds: 0.25
 
 # 監控目標
+# 
+# 參數說明：
+#   url: 監控的網站 URL
+#   expected_status: 預期憑證狀態 ("good", "expired", "revoked")
+#   renewal_days: 續約檢查週期（天數）
+#     - 設定數字（例如 30）：檢查憑證是否在該期限內已續約（即憑證核發日期在 N 天內）
+#     - 設為 ~ 或省略：跳過續約檢查
+#     - 範例：renewal_days: 30 表示憑證必須在 30 天內被重新申請/續約，否則發出告警
+#   ocsp_url: OCSP 回應器 URL（用於線上憑證吊銷檢查）
+#   issuer_url: 選填 - 指定 OCSP issuer 憑證 URL；設為 ~ 或省略，將使用憑證內建 AIA
+#
 sites:
   - url: "https://your.website.com"
     expected_status: "good"
+    renewal_days: 30
     ocsp_url: "http://ocsp.website.com"
-    issuer_url: ""  # 選填：指定 OCSP issuer 憑證 URL；留空則使用憑證內建 AIA
+    issuer_url: "https://ca.website.com/ca.cer"
 
   - url: "https://your.website2.com"
     expected_status: "expired"
+    renewal_days: ~
     ocsp_url: "http://ocsp.website2.com"
+    issuer_url: ~
     
   - url: "https://your.website3.com"
     expected_status: "revoked"
+    renewal_days: ~
     ocsp_url: "http://ocsp.website3.com"
+    issuer_url: ~

@@ -188,6 +188,8 @@ class EmailNotifier:
                 return '通過'
             if status == 'failed':
                 return '[失敗]'
+            if status == 'not_set':
+                return '-'
             return '(跳過)'
 
         def fmt_dt(dt) -> str:
@@ -226,6 +228,13 @@ class EmailNotifier:
 
             cr = result.get('check_results') or {}
             lines.append("   檢查：")
+            
+            # 續約檢查
+            renewal_check_status = cr.get('renewal_check', {}).get('status', 'skipped')
+            renewal_check_label_suffix = cr.get('renewal_check', {}).get('label_suffix', '')
+            lines.append(f"   - 續約檢查{renewal_check_label_suffix}: {check_label(renewal_check_status)}")
+            
+            # 效期檢查
             lines.append(f"   - 效期檢查: {check_label(cr.get('expiry_check', {}).get('status', 'skipped'))}")
             lines.append(f"   - CRL  檢查: {check_label(cr.get('crl_check', {}).get('status', 'skipped'))}")
             lines.append(f"   - OCSP 檢查: {check_label(cr.get('ocsp_check', {}).get('status', 'skipped'))}")
@@ -267,6 +276,8 @@ class EmailNotifier:
                 return "<span style='color:#2e7d32; font-weight:bold;'>通過</span>"
             if status == 'failed':
                 return "<span style='color:#d32f2f; font-weight:bold;'>失敗</span>"
+            if status == 'not_set':
+                return "<span style='color:#888;'>-</span>"
             return "<span style='color:#888;'>跳過</span>"
 
         def fmt_dt(dt) -> str:
@@ -315,6 +326,8 @@ class EmailNotifier:
             expiry_status = (cr.get('expiry_check') or {}).get('status', 'skipped')
             crl_status    = (cr.get('crl_check')    or {}).get('status', 'skipped')
             ocsp_status   = (cr.get('ocsp_check')   or {}).get('status', 'skipped')
+            renewal_status = (cr.get('renewal_check') or {}).get('status', 'skipped')
+            renewal_check_label_suffix = (cr.get('renewal_check') or {}).get('label_suffix', '')
             ocsp_msg      = (cr.get('ocsp_check') or {}).get('details', {}).get('message', '-') or '-'
             crl_msg       = crl_summary(cr, cert_info)
 
@@ -348,6 +361,10 @@ class EmailNotifier:
                 f"<th {th}>結果</th>",
                 "</tr></thead>",
                 "<tbody>",
+                f"<tr>"
+                f"<td {td}><span style='color:{label_color(renewal_status)};'>續約檢查{renewal_check_label_suffix}</span></td>"
+                f"<td {td}>{badge(renewal_status)}</td>"
+                f"</tr>",
                 f"<tr>"
                 f"<td {td}><span style='color:{label_color(expiry_status)};'>效期檢查</span></td>"
                 f"<td {td}>{badge(expiry_status)}</td>"

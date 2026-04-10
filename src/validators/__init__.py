@@ -66,7 +66,7 @@ class ExpiredValidator(CertificateValidator):
                 }
             }
             
-            logger.info(f"過期驗證完成: {result['message']}")
+            logger.info(f"效期驗證完成: {result['message']}")
             return result
             
         except Exception as e:
@@ -75,6 +75,92 @@ class ExpiredValidator(CertificateValidator):
                 'status': 'failed',
                 'message': f"驗證過程出錯: {str(e)}",
                 'details': {}
+            }
+
+
+class RenewalValidator(CertificateValidator):
+    """
+    續約狀態驗證器
+    
+    檢查憑證是否在設定的更新期限內被重新申請/續約
+    """
+    
+    def validate(self, cert_info: Dict[str, Any], renewal_days: int | None = None) -> Dict[str, Any]:
+        """
+        驗證憑證是否在續約期限內
+        
+        參數：
+            cert_info: 憑證資訊
+            renewal_days: 續約期限天數（None 表示未設定）
+        
+        返回：
+            {
+                'status': 'passed' | 'failed' | 'not_set',
+                'message': '檢查訊息',
+                'details': {
+                    'renewal_days': int | None,
+                    'days_since_issued': int,
+                    'not_before': datetime ISO string
+                }
+            }
+        """
+        from datetime import datetime
+        
+        try:
+            # 如果未設定續約檢查，返回 not_set
+            if renewal_days is None:
+                return {
+                    'status': 'not_set',
+                    'message': '未設定續約檢查',
+                    'details': {
+                        'renewal_days': None,
+                        'days_since_issued': None,
+                        'not_before': None
+                    }
+                }
+            
+            now = datetime.utcnow()
+            not_before = cert_info['not_before']
+            
+            # 移除時區資訊
+            if not_before.tzinfo is not None:
+                not_before = not_before.replace(tzinfo=None)
+            
+            # 計算憑證已發行的天數
+            time_diff = now - not_before
+            days_since_issued = time_diff.days
+            
+            # 邏輯：如果憑證已發行天數 < renewal_days，則通過；否則失敗
+            passed = days_since_issued < renewal_days
+            
+            if passed:
+                message = f"憑證在 {renewal_days} 天內已續約（已發行 {days_since_issued} 天）"
+            else:
+                message = f"憑證未在 {renewal_days} 天內續約（已發行 {days_since_issued} 天）"
+            
+            result = {
+                'status': 'passed' if passed else 'failed',
+                'message': message,
+                'details': {
+                    'renewal_days': renewal_days,
+                    'days_since_issued': days_since_issued,
+                    'not_before': not_before.isoformat()
+                }
+            }
+            
+            logger.info(f"續約檢查完成: {result['message']}")
+            return result
+            
+        except Exception as e:
+            logger.error(f"續約檢查失敗: {e}")
+            return {
+                'status': 'failed',
+                'message': f"驗證過程出錯: {str(e)}",
+                'details': {
+                    'renewal_days': renewal_days,
+                    'days_since_issued': None,
+                    'not_before': None
+                }
             }
 
 

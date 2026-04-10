@@ -172,12 +172,13 @@ class CertificateChecker:
             logger.error(f"憑證獲取失敗 ({hostname}): {e}")
             raise
     
-    def parse_certificate(self, cert_der: bytes) -> Dict[str, Any]:
+    def parse_certificate(self, cert_der: bytes, skip_aia_issuer_download: bool = False) -> Dict[str, Any]:
         """
         解析 DER 格式憑證，提取關鍵資訊
         
         參數：
             cert_der: 憑證的 DER 編碼二進位內容
+            skip_aia_issuer_download: 是否略過從 AIA 自動下載 issuer 憑證（預設 False）
         
         返回：
             包含憑證資訊的字典：
@@ -248,8 +249,18 @@ class CertificateChecker:
             issuer_cert_url = self._extract_issuer_cert_url(cert)
             issuer_certificate_der = None
             issuer_cert_error = None
-            if issuer_cert_url:
+            issuer_cert_source = None
+            if skip_aia_issuer_download:
+                logger.debug(f"略過 AIA issuer 憑證下載（使用者已指定 issuer_url）")
+                issuer_cert_error = 'skipped_by_user_issuer_url'
+            elif issuer_cert_url:
+                logger.debug(f"從 AIA 提取 issuer 憑證 URL: {issuer_cert_url}")
                 issuer_certificate_der, issuer_cert_error = self._download_issuer_certificate(issuer_cert_url)
+                issuer_cert_source = 'aia'
+                if issuer_certificate_der:
+                    logger.info(f"成功從 AIA 下載 issuer 憑證: {issuer_cert_url}")
+                else:
+                    logger.warning(f"從 AIA 下載 issuer 憑證失敗: {issuer_cert_url}, error={issuer_cert_error}")
             else:
                 issuer_cert_error = 'no_issuer_cert_url'
             
@@ -268,6 +279,7 @@ class CertificateChecker:
                 'issuer_cert_url': issuer_cert_url,
                 'issuer_certificate_der': issuer_certificate_der,
                 'issuer_cert_error': issuer_cert_error,
+                'issuer_cert_source': issuer_cert_source,
                 'public_key_type': key_type,
                 'certificate_der': cert_der
             }
