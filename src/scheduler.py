@@ -16,6 +16,10 @@ logger = logging.getLogger(__name__)
 
 class CertificateCheckScheduler:
     """憑證檢查調度器"""
+
+    MISFIRE_GRACE_TIME_SECONDS = 30
+    COALESCE = True
+    MAX_INSTANCES = 1
     
     def __init__(self, check_interval_hours: Optional[int] = None, check_times: Optional[List[str]] = None):
         """
@@ -81,7 +85,10 @@ class CertificateCheckScheduler:
                     trigger=trigger,
                     id='certificate_check_interval',
                     name='定期憑證檢查（間隔）',
-                    replace_existing=True
+                    replace_existing=True,
+                    misfire_grace_time=self.MISFIRE_GRACE_TIME_SECONDS,
+                    coalesce=self.COALESCE,
+                    max_instances=self.MAX_INSTANCES
                 )
             else:
                 for check_time in self.check_times:
@@ -92,7 +99,10 @@ class CertificateCheckScheduler:
                         trigger=trigger,
                         id=f"certificate_check_{check_time.replace(':', '')}",
                         name=f"定期憑證檢查（{check_time}）",
-                        replace_existing=True
+                        replace_existing=True,
+                        misfire_grace_time=self.MISFIRE_GRACE_TIME_SECONDS,
+                        coalesce=self.COALESCE,
+                        max_instances=self.MAX_INSTANCES
                     )
             
             self.scheduler.start()
